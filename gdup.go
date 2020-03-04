@@ -1,12 +1,16 @@
 package main
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 
+	"github.com/mitchellh/ioprogress"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/drive/v3"
 )
@@ -15,7 +19,8 @@ func main() {
 	file := flag.String("file", "", "File to upload.")
 	parent := flag.String("parent", "", "Google Drive ID of parent directory. Provide either -parent or -id.")
 	id := flag.String("id", "", "ID of file to upload to. Provide either -parent or -id.")
-	mime := flag.String("mime", "application/octet-stream", "MIME type of uploaded file.")
+	mime := flag.String("mime", "", "MIME type of uploaded file.")
+	verbose := flag.Bool("verbose", false, "Whether to be verbose with the progress.")
 	flag.Parse()
 
 	driveConfig := &oauth2.Config{
@@ -54,6 +59,33 @@ func main() {
 		log.Panic(err)
 	}
 
+	input, err := os.Open(*file)
+	if err != nil {
+		log.Panic(err)
+	}
+	defer input.Close()
+
+	upload := func(id string) error {
+		updateFile := &drive.File{}
+		if *mime != "" {
+			updateFile.MimeType = *mime
+		}
+		stat, err := input.Stat()
+		if err != nil {
+			return err
+		}
+		var realInput io.Reader = input
+		if *verbose {
+			realInput = &ioprogress.Reader{
+				Reader:   input,
+				Size:     stat.Size(),
+				DrawFunc: ioprogress.DrawTerminalf(os.Stderr, ioprogress.DrawTextFormatBar(80)),
+			}
+		}
+		_, err = driveService.Files.Update(id, updateFile).Media(realInput).Do()
+		return err
+	}
+
 	targetID := *id
 	if *parent != "" {
 		f := &drive.File{
@@ -61,23 +93,34 @@ func main() {
 			Parents: []string{
 				*parent,
 			},
-			MimeType: *mime,
+		}
+		if *mime != "" {
+			f.MimeType = *mime
 		}
 		f, err = driveService.Files.Create(f).Do()
 		if err != nil {
 			log.Panic(err)
 		}
 		targetID = f.Id
+	} else if *id != "" {
+		sum := md5.New()
+		io.Copy(sum, input)
+		localMd5 := hex.EncodeToString(sum.Sum(nil))
+		if _, err := input.Seek(0, 0); err != nil {
+			log.Panic(err)
+		}
+		f, err := driveService.Files.Get(targetID).Fields("md5Checksum").Do()
+		if err != nil {
+			log.Panic(err)
+		}
+		if localMd5 == f.Md5Checksum {
+			if *verbose {
+				fmt.Fprintf(os.Stderr, "%#v == %#v\n", localMd5, f.Md5Checksum)
+			}
+			upload = func(id string) error { return nil }
+		}
 	}
-	input, err := os.Open(*file)
-	if err != nil {
-		log.Panic(err)
-	}
-	defer input.Close()
-	_, err = driveService.Files.Update(targetID, &drive.File{
-		MimeType: *mime,
-	}).Media(input).Do()
-	if err != nil {
+	if err := upload(targetID); err != nil {
 		log.Panic(err)
 	}
 	fmt.Printf("https://drive.google.com/open?id=%s\n", targetID)
