@@ -21,6 +21,7 @@ func main() {
 	id := flag.String("id", "", "ID of file to upload to. Provide either -parent or -id.")
 	mime := flag.String("mime", "", "MIME type of uploaded file.")
 	verbose := flag.Bool("verbose", false, "Whether to be verbose with the progress.")
+	quiet := flag.Bool("quiet", false, "Whether to supress the final output of the link to the file on Google Drive.")
 	flag.Parse()
 
 	driveConfig := &oauth2.Config{
@@ -123,5 +124,7 @@ func main() {
 	if err := upload(targetID); err != nil {
 		log.Panic(err)
 	}
-	fmt.Printf("https://drive.google.com/open?id=%s\n", targetID)
+	if !*quiet {
+		fmt.Printf("https://drive.google.com/open?id=%s\n", targetID)
+	}
 }
